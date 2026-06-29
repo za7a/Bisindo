@@ -1,0 +1,14 @@
+# Large model/data artifacts
+model/
+model_kata/
+model_kata2/
+data_kata/
+*.h5
+*.pkl
+*.json
+*.png
+*.jpg
+*.jpeg
+*.npy
+*.pt
+*.bin

@@ -1,0 +1,735 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Deteksi BISINDO</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Syne:wght@700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link rel="stylesheet" href="detect.css">
+</head>
+<body>
+
+    <!-- NAVBAR -->
+    <nav class="navbar sticky-top" data-bs-theme="dark">
+        <div class="container">
+            <a class="navbar-brand" href="#">BISINDO</a>
+            <div class="d-flex align-items-center gap-3">
+                <ul class="navbar-nav flex-row gap-2 mb-0">
+                    <li class="nav-item"><a class="nav-link active" href="#">Deteksi</a></li>
+                </ul>
+            </div>
+        </div>
+    </nav>
+
+    <!-- PAGE HEADER + MODE TOGGLE -->
+    <div class="page-header">
+        <div class="container">
+            <div class="page-tag">Live Detection</div>
+            <h1 class="page-title">Deteksi Isyarat BISINDO</h1>
+
+            <!--
+            MODE TOGGLE:
+            - Mode Huruf/Angka → pakai MLP (/predict/huruf), input per frame
+            - Mode Kata        → pakai LSTM (/predict/kata), input sequence N frame
+            JavaScript akan membaca state.mode untuk menentukan
+            endpoint mana yang dipanggil.
+            -->
+            <div class="mode-toggle">
+                <button class="mode-btn active-huruf" id="btnModeHuruf" onclick="setMode('huruf')">
+                    <span>Huruf / Angka</span>
+                    <span class="mode-chip chip-mlp">MLP</span>
+                </button>
+                <button class="mode-btn" id="btnModeKata" onclick="setMode('kata')">
+                    <span>Kata</span>
+                    <span class="mode-chip chip-lstm">LSTM</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN -->
+    <div class="container">
+        <div class="detect-grid">
+
+            <!-- ═══ KOLOM KIRI: VIDEO ═══════════════════════ -->
+            <div class="video-panel">
+                <div class="video-toolbar">
+                    <span class="toolbar-label" id="toolbarLabel">Mode: Huruf / Angka</span>
+                    <div class="cam-status">
+                        <div class="cam-dot" id="camDot"></div>
+                        <span id="camStatusText">Tidak aktif</span>
+                    </div>
+                </div>
+
+                <div class="video-wrapper">
+                    <video id="videoEl" playsinline></video>
+                    <canvas id="canvasEl"></canvas>
+
+                    <div class="video-placeholder" id="placeholder">
+                        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1" stroke-linecap="round" stroke-linejoin="round">
+                            <path d="M23 7l-7 5 7 5V7z"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/>
+                        </svg>
+                        <p>Tekan "Mulai Kamera" untuk memulai</p>
+                    </div>
+
+                    <div class="prediction-overlay" id="predOverlay">
+                        <span class="pred-char mode-huruf" id="predChar">-</span>
+                        <span class="pred-conf" id="predConfOverlay">0%</span>
+                    </div>
+
+                    <!--
+                    Progress bar LSTM — hanya muncul di mode kata.
+                    Menunjukkan seberapa penuh buffer frame sudah terisi.
+                    Saat penuh, otomatis kirim ke /predict/kata.
+                    -->
+                    <div class="lstm-progress-bar" id="lstmProgressBar">
+                        <div class="lstm-progress-fill" id="lstmProgressFill"></div>
+                    </div>
+                </div>
+
+                <div class="video-controls">
+                    <button class="btn-cam btn-start" id="btnStart" onclick="startCamera()">▶ Mulai Kamera</button>
+                    <button class="btn-cam btn-stop"  id="btnStop"  onclick="stopCamera()" disabled>■ Stop</button>
+                </div>
+            </div>
+
+            <!-- ═══ KOLOM KANAN: PANEL ═════════════════════ -->
+            <div class="right-panel">
+
+                <!-- Hasil Deteksi -->
+                <div class="panel-card">
+                    <div class="panel-card-header" id="resultCardHeader">Hasil Deteksi — Huruf</div>
+                    <div class="panel-card-body">
+                        <div class="result-big">
+                            <div class="result-letter idle" id="resultLetter">—</div>
+                            <div class="result-conf-bar">
+                                <div class="result-conf-fill" id="confFill"></div>
+                            </div>
+                            <div class="result-conf-label" id="confLabel">Confidence: —</div>
+                        </div>
+                        <!--
+                        Info tambahan khusus mode kata:
+                        Tampilkan berapa frame sudah dikumpulkan.
+                        -->
+                        <div class="lstm-info" id="lstmInfo">
+                            Mengumpulkan frame... <span id="lstmFrameCount">0</span> / <span id="lstmFrameTarget">30</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Teks Terkumpul -->
+                <div class="panel-card">
+                    <div class="panel-card-header">Teks Terkumpul</div>
+                    <div class="panel-card-body">
+                        <div class="collected-text" id="collectedText">
+                            <span class="collected-empty">Hasil akan muncul di sini...</span>
+                        </div>
+                        <div class="text-controls">
+                            <button class="btn-text-action" onclick="addSpace()">+ Spasi</button>
+                            <button class="btn-text-action" onclick="deleteLast()">⌫ Hapus</button>
+                            <button class="btn-text-action danger" onclick="resetText()">✕ Reset</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Riwayat -->
+                <div class="panel-card">
+                    <div class="panel-card-header">Riwayat Deteksi</div>
+                    <div class="panel-card-body" style="padding:0.75rem 1rem;">
+                        <div class="history-list" id="historyList">
+                            <div style="font-size:0.8rem;color:var(--text-muted);text-align:center;padding:0.5rem;">Riwayat kosong</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Status API -->
+                <div class="panel-card">
+                    <div class="panel-card-header">Status API</div>
+                    <div class="panel-card-body">
+                        <div class="api-status-row">
+                            <span style="font-size:0.8rem;color:var(--text-muted);">MLP (huruf)</span>
+                            <span class="api-badge waiting" id="badgeMLP">
+                                <span class="api-badge-dot"></span>
+                                <span id="badgeMLPText">Belum dicek</span>
+                            </span>
+                        </div>
+                        <div class="api-status-row" style="margin-top:0.5rem;">
+                            <span style="font-size:0.8rem;color:var(--text-muted);">LSTM (kata)</span>
+                            <span class="api-badge waiting" id="badgeLSTM">
+                                <span class="api-badge-dot"></span>
+                                <span id="badgeLSTMText">Belum dicek</span>
+                            </span>
+                        </div>
+                        <div class="api-url-text">http://localhost:5000</div>
+                        <button class="btn-text-action" style="width:100%;margin-top:0.75rem;" onclick="checkHealth()">
+                            Cek Status API
+                        </button>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <div class="toast-wrap" id="toastWrap"></div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.8/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <script>
+    const API_BASE = 'http://localhost:5000';
+
+    // ═══════════════════════════════════════════════════
+    // STATE APLIKASI
+    // ═══════════════════════════════════════════════════
+    const state = {
+        mode:           'huruf',    // 'huruf' | 'kata'
+        cameraActive:   false,
+        collectedText:  '',
+        history:        [],
+
+        // Mode huruf — cooldown agar tidak spam teks
+        lastAddedTime:  0,
+        ADD_COOLDOWN:   1500,       // ms antar penambahan huruf
+
+        // Mode kata — buffer frame untuk LSTM
+        frameBuffer:    [],
+        LSTM_FRAMES:    70,         // harus sama dengan SEQUENCE_LENGTH di training_lstm.py
+        isCollecting:   false,      // sedang mengumpulkan frame?
+        lstmCooldown:   false,      // jeda setelah satu prediksi kata selesai
+        LSTM_COOLDOWN:  2000,       // ms jeda antar prediksi kata
+    };
+
+    // ═══════════════════════════════════════════════════
+    // DOM ELEMENTS
+    // ═══════════════════════════════════════════════════
+    const el = {
+        video:           document.getElementById('videoEl'),
+        canvas:          document.getElementById('canvasEl'),
+        placeholder:     document.getElementById('placeholder'),
+        camDot:          document.getElementById('camDot'),
+        camStatusText:   document.getElementById('camStatusText'),
+        btnStart:        document.getElementById('btnStart'),
+        btnStop:         document.getElementById('btnStop'),
+        predOverlay:     document.getElementById('predOverlay'),
+        predChar:        document.getElementById('predChar'),
+        predConfOverlay: document.getElementById('predConfOverlay'),
+        resultLetter:    document.getElementById('resultLetter'),
+        confFill:        document.getElementById('confFill'),
+        confLabel:       document.getElementById('confLabel'),
+        collectedText:   document.getElementById('collectedText'),
+        historyList:     document.getElementById('historyList'),
+        toastWrap:       document.getElementById('toastWrap'),
+        lstmProgressBar: document.getElementById('lstmProgressBar'),
+        lstmProgressFill:document.getElementById('lstmProgressFill'),
+        lstmInfo:        document.getElementById('lstmInfo'),
+        lstmFrameCount:  document.getElementById('lstmFrameCount'),
+        lstmFrameTarget: document.getElementById('lstmFrameTarget'),
+        resultCardHeader:document.getElementById('resultCardHeader'),
+        toolbarLabel:    document.getElementById('toolbarLabel'),
+    };
+
+    const ctx = el.canvas.getContext('2d');
+    let hands, camera;
+
+    // ═══════════════════════════════════════════════════
+    // GANTI MODE
+    //
+    // Saat mode berganti:
+    // 1. Update state.mode
+    // 2. Update tampilan tombol tab
+    // 3. Reset buffer LSTM dan hasil
+    // 4. Tampilkan/sembunyikan elemen khusus mode
+    // ═══════════════════════════════════════════════════
+    function setMode(mode) {
+        state.mode = mode;
+        state.frameBuffer = [];
+
+        const btnHuruf = document.getElementById('btnModeHuruf');
+        const btnKata  = document.getElementById('btnModeKata');
+
+        if (mode === 'huruf') {
+            btnHuruf.className = 'mode-btn active-huruf';
+            btnKata.className  = 'mode-btn';
+            el.predChar.className      = 'pred-char mode-huruf';
+            el.resultLetter.className  = 'result-letter idle';
+            el.lstmProgressBar.classList.remove('visible');
+            el.lstmInfo.classList.remove('visible');
+            el.toolbarLabel.textContent    = 'Mode: Huruf / Angka';
+            el.resultCardHeader.textContent = 'Hasil Deteksi — Huruf';
+        } else {
+            btnHuruf.className = 'mode-btn';
+            btnKata.className  = 'mode-btn active-kata';
+            el.predChar.className      = 'pred-char mode-kata';
+            el.resultLetter.className  = 'result-letter idle';
+            el.lstmProgressBar.classList.add('visible');
+            el.lstmInfo.classList.add('visible');
+            el.toolbarLabel.textContent    = 'Mode: Kata (LSTM)';
+            el.resultCardHeader.textContent = 'Hasil Deteksi — Kata';
+            el.lstmFrameTarget.textContent = state.LSTM_FRAMES;
+            el.lstmFrameCount.textContent  = '0';
+        }
+
+        // Reset hasil tampilan
+        el.resultLetter.textContent = '—';
+        el.resultLetter.classList.add('idle');
+        el.confFill.style.width = '0%';
+        el.confLabel.textContent = 'Confidence: —';
+        el.predOverlay.classList.remove('visible');
+    }
+
+    // ═══════════════════════════════════════════════════
+    // MEDIAPIPE SETUP
+    // ═══════════════════════════════════════════════════
+    function initMediaPipe() {
+        hands = new Hands({
+            locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${f}`
+        });
+        hands.setOptions({
+            maxNumHands: 2,             // deteksi dua tangan (NUM = 126)
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.5,
+        });
+        hands.onResults(onHandResults);
+    }
+
+    // ═══════════════════════════════════════════════════
+    // CALLBACK TIAP FRAME
+    //
+    // PERCABANGAN MODE:
+    // - mode 'huruf' → langsung kirim landmark ke /predict/huruf
+    // - mode 'kata'  → kumpulkan ke frameBuffer dulu,
+    //                  baru kirim ke /predict/kata saat buffer penuh
+    // ═══════════════════════════════════════════════════
+    async function onHandResults(results) {
+        el.canvas.width  = results.image.width;
+        el.canvas.height = results.image.height;
+
+        ctx.save();
+        ctx.clearRect(0, 0, el.canvas.width, el.canvas.height);
+        ctx.drawImage(results.image, 0, 0);
+
+        if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+            /*
+            LOGIKA DUA TANGAN (NUM = 126):
+            Model dilatih dengan input 126 nilai:
+                tangan kiri  → 63 nilai (21 landmark × 3)
+                tangan kanan → 63 nilai (21 landmark × 3)
+            Total: 126 nilai, urutan: [kiri..., kanan...]
+
+            KENAPA urutan harus konsisten?
+            Model belajar dari posisi fitur yang tetap.
+            Jika saat training kiri selalu di indeks 0-62,
+            maka saat inferensi harus sama persis.
+
+            MediaPipe memberi label handedness ('Left'/'Right')
+            untuk tiap tangan yang terdeteksi.
+            Kita pakai label itu untuk menempatkan landmark
+            di slot yang benar, bukan urutan deteksi.
+
+            Jika hanya satu tangan terdeteksi,
+            slot tangan yang tidak ada diisi NOLKAN (zero-padding)
+            agar panjang input tetap 126.
+            */
+
+            // Slot kosong = 21 landmark × 3 koordinat = 63 nol
+            const ZERO_HAND = new Array(63).fill(0);
+            let leftFlat  = ZERO_HAND;
+            let rightFlat = ZERO_HAND;
+
+            results.multiHandLandmarks.forEach((landmarks, i) => {
+                const label = results.multiHandedness[i].label;
+
+                // Gambar skeleton untuk tiap tangan
+                drawConnectors(ctx, landmarks, HAND_CONNECTIONS, {
+                    color: state.mode === 'huruf' ? 'rgba(59,130,246,0.6)' : 'rgba(168,85,247,0.6)',
+                    lineWidth: 2
+                });
+                drawLandmarks(ctx, landmarks, {
+                    color: state.mode === 'huruf' ? '#3b82f6' : '#a855f7',
+                    fillColor: state.mode === 'huruf' ? '#1d4ed8' : '#7c3aed',
+                    lineWidth: 1, radius: 4
+                });
+
+                /*
+                NORMALISASI — harus persis sama dengan collect_data.py:
+
+                    coords -= coords[0]                      # geser ke wrist
+                    scale = np.max(np.abs(coords)) + 1e-6   # scale faktor
+                    coords /= scale                          # normalisasi
+
+                Tanpa ini, nilai x,y,z dari MediaPipe (0.0–1.0 relatif frame)
+                akan sangat berbeda dari nilai training yang sudah dinormalisasi.
+                Itulah kenapa model selalu prediksi "E" — distribusi input berbeda.
+                */
+
+                // 1. Ambil koordinat mentah sebagai array [x,y,z] per landmark
+                const coords = landmarks.map(lm => [lm.x, lm.y, lm.z]);
+
+                // 2. Geser semua koordinat relatif ke wrist (landmark index 0)
+                const wx = coords[0][0], wy = coords[0][1], wz = coords[0][2];
+                const shifted = coords.map(([x, y, z]) => [x - wx, y - wy, z - wz]);
+
+                // 3. Hitung scale = max(abs(semua nilai)) + 1e-6
+                const allVals = shifted.flat();
+                const scale   = Math.max(...allVals.map(Math.abs)) + 1e-6;
+
+                // 4. Bagi semua nilai dengan scale
+                const normalized = shifted.map(([x, y, z]) => [x/scale, y/scale, z/scale]);
+
+                // 5. Flatten ke array 1D (63 nilai per tangan)
+                const flat = normalized.flat();
+
+                // Urutan sesuai collect_data.py:
+                // label "Right" dari MediaPipe = tangan KIRI user → slot kiri [0:63]
+                // label "Left"  dari MediaPipe = tangan KANAN user → slot kanan [63:126]
+                if (label === 'Right') leftFlat  = flat;
+                else                   rightFlat = flat;
+            });
+
+            ctx.restore();
+
+            // Gabung: [kiri (63), kanan (63)] = 126 nilai
+            // Urutan ini sesuai collect_data.py:
+            //   np.concatenate([left_features, right_features])
+            const flat126 = [...leftFlat, ...rightFlat];
+
+            if (state.mode === 'huruf') {
+                await predictHuruf(flat126);
+            } else {
+                collectFrameForLSTM(flat126);
+            }
+
+        } else {
+            ctx.restore();
+            // Tidak ada tangan — reset smoother agar prediksi tidak tertahan
+            // (sama dengan smoother.clear() di inference.py)
+            smoother.clear();
+            el.predOverlay.classList.remove('visible');
+        }
+    }
+
+    // ═══════════════════════════════════════════════════
+    // PREDICTION SMOOTHER
+    //
+    // Sama persis dengan PredictionSmoother di inference.py:
+    //   window=12 → simpan 12 prediksi terakhir
+    //   get()     → ambil label mayoritas + rata-rata confidence-nya
+    //
+    // KENAPA perlu ini?
+    // Tanpa smoother, prediksi loncat-loncat tiap frame karena:
+    //   - Tangan bergerak sedikit → fitur berubah → prediksi beda
+    //   - Noise kamera → koordinat landmark tidak stabil
+    // Dengan smoother, label yang paling sering muncul dalam
+    // 12 frame terakhir yang ditampilkan → lebih stabil.
+    // ═══════════════════════════════════════════════════
+    class PredictionSmoother {
+        constructor(windowSize = 12) {
+            this.windowSize = windowSize;
+            this.buffer = [];   // [{label, confidence}, ...]
+        }
+
+        update(label, confidence) {
+            this.buffer.push({ label, confidence });
+            if (this.buffer.length > this.windowSize) {
+                this.buffer.shift();   // hapus yang paling lama
+            }
+        }
+
+        get() {
+            if (this.buffer.length === 0) return { label: null, confidence: 0 };
+
+            // Hitung label yang paling sering muncul (majority vote)
+            const counts = {};
+            this.buffer.forEach(({ label }) => {
+                counts[label] = (counts[label] || 0) + 1;
+            });
+            const majority = Object.keys(counts).reduce((a, b) =>
+                counts[a] >= counts[b] ? a : b
+            );
+
+            // Rata-rata confidence khusus untuk label mayoritas
+            const majorityItems = this.buffer.filter(b => b.label === majority);
+            const avgConf = majorityItems.reduce((s, b) => s + b.confidence, 0)
+                            / majorityItems.length;
+
+            return { label: majority, confidence: avgConf };
+        }
+
+        clear() { this.buffer = []; }
+    }
+
+    // Inisialisasi smoother — satu untuk mode huruf
+    const smoother = new PredictionSmoother(12);
+
+    // ═══════════════════════════════════════════════════
+    // MODE HURUF — panggil /predict/huruf tiap ~200ms
+    // ═══════════════════════════════════════════════════
+    let lastHurufCall = 0;
+
+    async function predictHuruf(flatLandmarks) {
+        const now = Date.now();
+        if (now - lastHurufCall < 200) return;   // throttle 5 req/detik
+        lastHurufCall = now;
+
+        try {
+            const res = await fetch(`${API_BASE}/predict/huruf`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ landmarks: flatLandmarks })
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+            const data = await res.json();
+
+            // Masukkan ke smoother dulu sebelum tampilkan
+            smoother.update(data.label, data.confidence);
+            const { label, confidence } = smoother.get();
+            showResult(label, confidence, 'huruf');
+
+        } catch (err) {
+            // API tidak bisa dihubungi — tidak crash
+        }
+    }
+
+    // ═══════════════════════════════════════════════════
+    // MODE KATA — kumpulkan frame, lalu kirim ke /predict/kata
+    //
+    // CARA KERJA:
+    // 1. Tiap frame dengan tangan terdeteksi, simpan flat landmark ke buffer
+    // 2. Saat buffer mencapai LSTM_FRAMES (misal 70), kirim ke API
+    // 3. Setelah dapat hasil, tunggu LSTM_COOLDOWN sebelum kumpulkan lagi
+    //
+    // KENAPA ada cooldown setelah prediksi?
+    // Agar tidak langsung mengumpulkan frame untuk prediksi berikutnya
+    // sebelum user sempat melihat hasilnya.
+    // ═══════════════════════════════════════════════════
+    function collectFrameForLSTM(flatLandmarks) {
+        if (state.lstmCooldown) return;
+
+        state.frameBuffer.push(flatLandmarks);
+
+        // Update progress bar
+        const progress = (state.frameBuffer.length / state.LSTM_FRAMES) * 100;
+        el.lstmProgressFill.style.width = `${Math.min(progress, 100)}%`;
+        el.lstmFrameCount.textContent   = Math.min(state.frameBuffer.length, state.LSTM_FRAMES);
+
+        // Saat buffer penuh, kirim ke API
+        if (state.frameBuffer.length >= state.LSTM_FRAMES) {
+            const sequence = [...state.frameBuffer];
+            state.frameBuffer = [];                 // reset buffer
+            state.lstmCooldown = true;
+            el.lstmProgressFill.style.width = '0%';
+            el.lstmFrameCount.textContent   = '0';
+
+            predictKata(sequence).then(() => {
+                // Setelah prediksi selesai, mulai cooldown
+                setTimeout(() => {
+                    state.lstmCooldown = false;
+                }, state.LSTM_COOLDOWN);
+            });
+        }
+    }
+
+    async function predictKata(sequence) {
+        try {
+            const res = await fetch(`${API_BASE}/predict/kata`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ sequence })
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+
+            const data = await res.json();
+            showResult(data.label, data.confidence, 'kata');
+
+        } catch (err) {
+            showToast('Gagal prediksi kata: ' + err.message, true);
+        }
+    }
+
+    // ═══════════════════════════════════════════════════
+    // UPDATE UI HASIL
+    // ═══════════════════════════════════════════════════
+    function showResult(label, confidence, mode) {
+        const confPct = Math.round(confidence * 100);
+
+        // Overlay di video
+        el.predChar.textContent        = label;
+        el.predConfOverlay.textContent = `${confPct}%`;
+        el.predOverlay.classList.add('visible');
+
+        // Panel kanan
+        el.resultLetter.textContent = label;
+        el.resultLetter.classList.remove('idle', 'mode-huruf', 'mode-kata');
+        el.resultLetter.classList.add(`mode-${mode}`);
+        el.confFill.style.width    = `${confPct}%`;
+        el.confLabel.textContent   = `Confidence: ${confPct}%`;
+
+        // Warna bar confidence
+        el.confFill.style.background =
+            confPct >= 80 ? 'var(--green)' :
+            confPct >= 50 ? 'var(--amber)' : 'var(--red)';
+
+        // Tambah ke teks terkumpul
+        const now = Date.now();
+        if (mode === 'huruf') {
+            // Mode huruf: tambah jika confidence ≥ 80% dan sudah lewat cooldown
+            if (confidence >= 0.80 && now - state.lastAddedTime > state.ADD_COOLDOWN) {
+                state.lastAddedTime = now;
+                state.collectedText += label;
+                renderCollectedText();
+            }
+        } else {
+            // Mode kata: selalu tambah (setiap prediksi sudah ada cooldown dari buffer)
+            state.collectedText += (state.collectedText ? ' ' : '') + label;
+            renderCollectedText();
+        }
+
+        addHistory(label, confPct, mode);
+    }
+
+    function renderCollectedText() {
+        el.collectedText.innerHTML = state.collectedText === ''
+            ? '<span class="collected-empty">Hasil akan muncul di sini...</span>'
+            : state.collectedText;
+    }
+
+    function addHistory(char, confPct, mode) {
+        if (state.history.length === 0) el.historyList.innerHTML = '';
+        state.history.unshift({ char, confPct, mode });
+        if (state.history.length > 8) state.history.pop();
+
+        const color = mode === 'huruf' ? 'var(--accent)' : 'var(--purple)';
+        const item  = document.createElement('div');
+        item.className = 'history-item';
+        item.innerHTML = `
+            <span class="history-char mode-${mode}">${char}</span>
+            <div class="history-bar-wrap">
+                <div class="history-bar" style="width:${confPct}%; background:${color}"></div>
+            </div>
+            <span class="history-conf">${confPct}%</span>
+        `;
+        el.historyList.insertBefore(item, el.historyList.firstChild);
+        if (el.historyList.children.length > 8)
+            el.historyList.removeChild(el.historyList.lastChild);
+    }
+
+    // ═══════════════════════════════════════════════════
+    // KAMERA
+    // ═══════════════════════════════════════════════════
+    async function startCamera() {
+        try {
+            initMediaPipe();
+            camera = new Camera(el.video, {
+                onFrame: async () => { await hands.send({ image: el.video }); },
+                width: 640, height: 480,
+            });
+            await camera.start();
+
+            state.cameraActive = true;
+            el.placeholder.classList.add('hidden');
+            el.camDot.className     = 'cam-dot active';
+            el.camStatusText.textContent = 'Aktif';
+            el.btnStart.disabled    = true;
+            el.btnStop.disabled     = false;
+
+        } catch (err) {
+            showToast('Tidak bisa mengakses kamera: ' + err.message, true);
+            el.camDot.className = 'cam-dot error';
+            el.camStatusText.textContent = 'Error';
+        }
+    }
+
+    function stopCamera() {
+        if (camera) camera.stop();
+        state.cameraActive = false;
+        state.frameBuffer  = [];
+
+        ctx.clearRect(0, 0, el.canvas.width, el.canvas.height);
+        el.placeholder.classList.remove('hidden');
+        el.camDot.className          = 'cam-dot';
+        el.camStatusText.textContent  = 'Tidak aktif';
+        el.btnStart.disabled          = false;
+        el.btnStop.disabled           = true;
+        el.predOverlay.classList.remove('visible');
+        el.resultLetter.textContent   = '—';
+        el.resultLetter.classList.add('idle');
+        el.confFill.style.width       = '0%';
+        el.confLabel.textContent      = 'Confidence: —';
+        el.lstmProgressFill.style.width = '0%';
+        el.lstmFrameCount.textContent   = '0';
+    }
+
+    // ═══════════════════════════════════════════════════
+    // AKSI TEKS
+    // ═══════════════════════════════════════════════════
+    function addSpace()  { state.collectedText += ' '; renderCollectedText(); }
+    function deleteLast(){ state.collectedText = state.collectedText.slice(0,-1); renderCollectedText(); }
+    function resetText() {
+        state.collectedText = '';
+        state.history = [];
+        state.frameBuffer = [];
+        renderCollectedText();
+        el.historyList.innerHTML = '<div style="font-size:0.8rem;color:var(--text-muted);text-align:center;padding:0.5rem;">Riwayat kosong</div>';
+        el.lstmProgressFill.style.width = '0%';
+        el.lstmFrameCount.textContent = '0';
+    }
+
+    // ═══════════════════════════════════════════════════
+    // CEK STATUS API (/health)
+    // ═══════════════════════════════════════════════════
+    async function checkHealth() {
+        try {
+            const res  = await fetch(`${API_BASE}/health`);
+            const data = await res.json();
+
+            // MLP
+            if (data.models.mlp_ready) {
+                setBadge('badgeMLP', 'badgeMLPText', 'ok', 'Siap');
+            } else {
+                setBadge('badgeMLP', 'badgeMLPText', 'error', 'Model tidak ada');
+            }
+
+            // LSTM
+            if (data.models.lstm_ready) {
+                setBadge('badgeLSTM', 'badgeLSTMText', 'ok', 'Siap');
+            } else {
+                setBadge('badgeLSTM', 'badgeLSTMText', 'error', 'Model tidak ada');
+            }
+
+        } catch {
+            setBadge('badgeMLP',  'badgeMLPText',  'error', 'Server mati');
+            setBadge('badgeLSTM', 'badgeLSTMText', 'error', 'Server mati');
+            showToast('Jalankan: python api.py', true);
+        }
+    }
+
+    function setBadge(badgeId, textId, type, text) {
+        document.getElementById(badgeId).className = `api-badge ${type}`;
+        document.getElementById(textId).textContent = text;
+    }
+
+    // ═══════════════════════════════════════════════════
+    // TOAST
+    // ═══════════════════════════════════════════════════
+    function showToast(msg, isError = false) {
+        const div = document.createElement('div');
+        div.className = 'toast-msg' + (isError ? ' err' : '');
+        div.textContent = msg;
+        el.toastWrap.appendChild(div);
+        setTimeout(() => div.remove(), 3000);
+    }
+
+    // Cek health saat halaman pertama dibuka
+    window.addEventListener('load', () => {
+        setTimeout(checkHealth, 500);
+    });
+    </script>
+</body>
+</html>
